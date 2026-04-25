@@ -202,7 +202,7 @@
     local translations = {
         vi = {
             Tabs = { Songs = "Bài Hát", AddSong = "Thêm Bài Hát", Scripts = "Script Storage", Manager = "Quản Lý", AI = "AI Trợ Lý", Settings = "Cài Đặt" },
-            SongTab = { List = "Danh Sách Bài Hát", BPM = "BPM:", Genre = "Thể loại:", Artist = "Ca sĩ:", UnknownGenre = "Chưa rõ", UnknownArtist = "Đang cập nhật" },
+            SongTab = { List = "Danh Sách Bài Hát", LocalList = "Bài Hát Local (folder)", BPM = "BPM:", Genre = "Thể loại:", Artist = "Ca sĩ:", UnknownGenre = "Chưa rõ", UnknownArtist = "Đang cập nhật", LocalEmpty = "Chưa có file .lua nào trong PianoTuDong_LocalSongs/", LocalLoaded = "Đã nạp ", LocalFiles = " bài hát local" },
             AddSong = {
                 Section = "Thông Tin Bài Hát Mới",
                 Name = "Tên Bài Hát", NameDesc = "Nhập tên bài hát", NamePH = "VD: Nơi Này Có Anh",
@@ -263,7 +263,7 @@
         },
         en = {
             Tabs = { Songs = "Songs", AddSong = "Add Song", Scripts = "Script Storage", Manager = "Manager", AI = "AI Assistant", Settings = "Settings" },
-            SongTab = { List = "Song List", BPM = "BPM:", Genre = "Genre:", Artist = "Artist:", UnknownGenre = "Unknown", UnknownArtist = "Updating" },
+            SongTab = { List = "Song List", LocalList = "Local Songs (folder)", BPM = "BPM:", Genre = "Genre:", Artist = "Artist:", UnknownGenre = "Unknown", UnknownArtist = "Updating", LocalEmpty = "No .lua files in PianoTuDong_LocalSongs/", LocalLoaded = "Loaded ", LocalFiles = " local songs" },
             AddSong = {
                 Section = "New Song Info",
                 Name = "Song Name", NameDesc = "Enter song name", NamePH = "Ex: Shape of You",
@@ -343,6 +343,61 @@
             writefile("PianoTuDong_Songs.json", HttpService:JSONEncode(customSongs))
         end
     end
+
+    -- ===== Local song script detection =====
+    -- Scans PianoTuDong_LocalSongs/ for *.lua files. Each file becomes a
+    -- playable song with metadata extracted from optional comment headers
+    -- (-- @Name:, -- @Artist:, -- @Genre:, -- @BPM:) and the `bpm = N`
+    -- declaration. Run path uses executeScript on the raw code (no URL).
+    local LOCAL_SONG_DIR = "PianoTuDong_LocalSongs"
+    local localSongs = {}
+    local function parseLocalSong(code, fallbackName)
+        local meta = {}
+        meta.Name     = code:match("%-%-%s*@Name%s*:%s*([^\r\n]+)")
+        meta.Artist   = code:match("%-%-%s*@Artist%s*:%s*([^\r\n]+)")
+        meta.Genre    = code:match("%-%-%s*@Genre%s*:%s*([^\r\n]+)")
+        local bpmHdr  = code:match("%-%-%s*@BPM%s*:%s*(%d+)")
+        local bpmDecl = code:match("bpm%s*=%s*(%d+)")
+        meta.BPM      = tonumber(bpmHdr or bpmDecl) or 100
+        if meta.Name   then meta.Name   = meta.Name:gsub("^%s+",""):gsub("%s+$","")   end
+        if meta.Artist then meta.Artist = meta.Artist:gsub("^%s+",""):gsub("%s+$","") end
+        if meta.Genre  then meta.Genre  = meta.Genre:gsub("^%s+",""):gsub("%s+$","")  end
+        if not meta.Name or meta.Name == "" then meta.Name = fallbackName end
+        meta.Playlist = meta.Genre or "🎵 Local"
+        return meta
+    end
+
+    local function loadLocalSongs()
+        if not (isfolder and isfile and listfiles and readfile) then return end
+        if not isfolder(LOCAL_SONG_DIR) then
+            if makefolder then
+                pcall(makefolder, LOCAL_SONG_DIR)
+            else
+                return
+            end
+        end
+        local ok, files = pcall(listfiles, LOCAL_SONG_DIR)
+        if not ok or type(files) ~= "table" then return end
+        for _, path in ipairs(files) do
+            if type(path) == "string" and path:lower():match("%.lua$") then
+                local read_ok, code = pcall(readfile, path)
+                if read_ok and type(code) == "string" and code ~= "" then
+                    -- Filename without extension as fallback song name
+                    local fname = path:match("([^/\\]+)%.lua$") or "local_song"
+                    local meta  = parseLocalSong(code, fname)
+                    table.insert(localSongs, {
+                        Name      = "📁 " .. meta.Name,
+                        BPM       = meta.BPM,
+                        Artist    = meta.Artist or T.SongTab.UnknownArtist,
+                        Playlist  = meta.Playlist,
+                        LocalCode = code,
+                        LocalPath = path,
+                    })
+                end
+            end
+        end
+    end
+    loadLocalSongs()
 
     -- ===== TALENTLESS Module Wrap =====
     -- Wraps hellohellohell012321/TALENTLESS loader_main.lua + exposes
@@ -459,6 +514,7 @@
     if customSongs and type(customSongs) == "table" then
         for _, s in ipairs(customSongs) do table.insert(allSongs, s) end
     end
+    for _, s in ipairs(localSongs) do table.insert(allSongs, s) end
 
     updateLoading("Loading GUI Library...", 0.8)
     local WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/RandomGuy-VN/NimiUI/refs/heads/main/source.lua", true))()
@@ -492,8 +548,21 @@
             Title = song.Name or "???",
             Desc = T.SongTab.BPM .. " " .. sBpm .. " | " .. T.SongTab.Genre .. " " .. sPlaylist .. " | " .. T.SongTab.Artist .. " " .. sArtist,
             Callback = function()
-                pcall(playSong, song.BPM or 100, song.URL)
+                if song.LocalCode then
+                    pcall(TALENTLESS.playCode, song.LocalCode, song.BPM or 100)
+                else
+                    pcall(playSong, song.BPM or 100, song.URL)
+                end
             end
+        })
+    end
+
+    if #localSongs > 0 then
+        WindUI:Notify({
+            Title = T.SongTab.LocalList or "Local Songs",
+            Content = (T.SongTab.LocalLoaded or "Loaded ") .. tostring(#localSongs) .. (T.SongTab.LocalFiles or " local songs"),
+            Duration = 4,
+            Icon = "folder",
         })
     end
 
