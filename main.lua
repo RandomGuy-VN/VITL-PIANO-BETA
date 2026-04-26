@@ -425,19 +425,41 @@
         return true
     end
 
+    -- Generation token so a new playback supersedes the previous one even if
+    -- it's still mid-loop. Old keypresses early-return when token mismatches.
+    TALENTLESS._playToken = 0
+
+    function TALENTLESS._stopCurrent()
+        TALENTLESS._playToken = TALENTLESS._playToken + 1
+        -- Best-effort: call finishedSong if the loader exposed it, to clear
+        -- any internal "playing" flag the song scripts rely on.
+        local fin = TALENTLESS.api and TALENTLESS.api.finishedSong
+        if fin then pcall(fin) end
+        if getgenv().finishedSong then pcall(getgenv().finishedSong) end
+    end
+
     function TALENTLESS.playSong(songBpm, songUrl)
+        TALENTLESS._stopCurrent()
+        local myToken = TALENTLESS._playToken
         bpm = songBpm
         getgenv().bpm = songBpm
         TALENTLESS.ensureLoaded()
         return pcall(function()
-            loadstring(game:HttpGet(songUrl, true))()
+            local code = game:HttpGet(songUrl, true)
+            local fn = loadstring(code)
+            if fn and TALENTLESS._playToken == myToken then fn() end
         end)
     end
 
     function TALENTLESS.playCode(code, fallbackBpm)
+        TALENTLESS._stopCurrent()
+        local myToken = TALENTLESS._playToken
         getgenv().bpm = fallbackBpm or getgenv().bpm or 100
         TALENTLESS.ensureLoaded()
-        return pcall(function() loadstring(code)() end)
+        return pcall(function()
+            local fn = loadstring(code)
+            if fn and TALENTLESS._playToken == myToken then fn() end
+        end)
     end
 
     function TALENTLESS.parseScript(code)
@@ -548,11 +570,13 @@
             Title = song.Name or "???",
             Desc = T.SongTab.BPM .. " " .. sBpm .. " | " .. T.SongTab.Genre .. " " .. sPlaylist .. " | " .. T.SongTab.Artist .. " " .. sArtist,
             Callback = function()
-                if song.LocalCode then
-                    pcall(TALENTLESS.playCode, song.LocalCode, song.BPM or 100)
-                else
-                    pcall(playSong, song.BPM or 100, song.URL)
-                end
+                task.spawn(function()
+                    if song.LocalCode then
+                        pcall(TALENTLESS.playCode, song.LocalCode, song.BPM or 100)
+                    else
+                        pcall(playSong, song.BPM or 100, song.URL)
+                    end
+                end)
             end
         })
     end
