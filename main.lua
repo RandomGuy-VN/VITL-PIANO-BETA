@@ -201,10 +201,10 @@
                 Name = "Tên Bài Hát", NameDesc = "Nhập tên bài hát", NamePH = "VD: Nơi Này Có Anh",
                 Artist = "Ca Sĩ / Tác Giả", ArtistDesc = "Nhập tên ca sĩ hoặc tác giả", ArtistPH = "VD: Sơn Tùng M-TP",
                 Genre = "Thể Loại", GenreDesc = "Nhập thể loại nhạc", GenrePH = "VD: Nhạc Trẻ",
-                Script = "Script Bài Hát", ScriptDesc = "Dán toàn bộ script lua (tự nhận BPM & URL)", ScriptPH = "bpm = 138\nloadstring(...)...",
-                AddBtn = "Thêm Bài Hát Vào Danh Sách", AddBtnDesc = "Bài hát sẽ được thêm và chạy ngay",
+                Script = "Script Bài Hát", ScriptDesc = "Dán toàn bộ script lua (tự nhận BPM & URL, hoặc lưu offline nếu không có URL)", ScriptPH = "bpm = 138\nloadstring(...)...",
+                AddBtn = "Thêm Bài Hát Vào Danh Sách", AddBtnDesc = "Bài hát sẽ được thêm và chạy ngay (URL hoặc lưu offline)",
                 Success = "Thành công", Added = "Đã thêm và chạy bài hát: ",
-                Error = "Lỗi", ErrorMsg = "Không tìm thấy BPM hoặc URL trong script! Hãy điền tên bài hát và dán script đúng định dạng."
+                Error = "Lỗi", ErrorMsg = "Script không hợp lệ! Cần có BPM và URL, hoặc các lệnh keypress để lưu offline."
             },
             Scripts = {
                 ExecUrl = "Thực Thi Bằng Link (Execute by URL)",
@@ -229,10 +229,10 @@
                 Name = "Song Name", NameDesc = "Enter song name", NamePH = "Ex: Shape of You",
                 Artist = "Artist / Author", ArtistDesc = "Enter artist name", ArtistPH = "Ex: Ed Sheeran",
                 Genre = "Genre", GenreDesc = "Enter genre", GenrePH = "Ex: Pop",
-                Script = "Song Script", ScriptDesc = "Paste full lua script (auto-detects BPM & URL)", ScriptPH = "bpm = 138\nloadstring(...)...",
-                AddBtn = "Add Song To List", AddBtnDesc = "Song will be added and played immediately",
+                Script = "Song Script", ScriptDesc = "Paste full lua script (auto-detects BPM & URL, or saves offline if no URL)", ScriptPH = "bpm = 138\nloadstring(...)...",
+                AddBtn = "Add Song To List", AddBtnDesc = "Song will be added and played (URL or saved offline)",
                 Success = "Success", Added = "Added and playing song: ",
-                Error = "Error", ErrorMsg = "Could not detect BPM or URL from script! Please enter song name and paste a valid script."
+                Error = "Error", ErrorMsg = "Invalid script! Need BPM + URL, or keypress commands to save offline."
             },
             Scripts = {
                 ExecUrl = "Execute by URL",
@@ -272,12 +272,43 @@
     end
 
     local LOADER_URL = "https://cdn.jsdelivr.net/gh/hellohellohell012321/TALENTLESS@main/loader_main.lua"
+    local LOCAL_SONGS_DIR = "PianoTuDong_LocalSongs"
 
-    local function playSong(songBpm, songUrl)
+    if makefolder and (not isfolder or not isfolder(LOCAL_SONGS_DIR)) then
+        pcall(makefolder, LOCAL_SONGS_DIR)
+    end
+
+    local function sanitizeFileName(name)
+        local safe = (name or "song"):gsub('[\\/:%*%?"<>|]', "_"):gsub("%s+", "_")
+        if safe == "" then safe = "song" end
+        return safe
+    end
+
+    local function saveLocalSongFile(name, code)
+        if not writefile then return nil end
+        local base = sanitizeFileName(name)
+        local path = LOCAL_SONGS_DIR .. "/" .. base .. ".lua"
+        local i = 1
+        while isfile and isfile(path) do
+            i = i + 1
+            path = LOCAL_SONGS_DIR .. "/" .. base .. "_" .. i .. ".lua"
+        end
+        local ok = pcall(writefile, path, code)
+        if ok then return path end
+        return nil
+    end
+
+    local function playSong(songBpm, songSource, isLocal)
         bpm = songBpm
         getgenv().bpm = songBpm
-        loadstring(game:HttpGet(LOADER_URL, true))()
-        loadstring(game:HttpGet(songUrl, true))()
+        if isLocal then
+            if isfile and isfile(songSource) then
+                loadstring(readfile(songSource))()
+            end
+        else
+            loadstring(game:HttpGet(LOADER_URL, true))()
+            loadstring(game:HttpGet(songSource, true))()
+        end
     end
 
     local function parseScript(code)
@@ -285,13 +316,14 @@
         local detectedUrl = code:match('game:HttpGet%(%s*"(https?://gist[^"]+)"%s*[,%)]')
             or code:match('game:HttpGet%(%s*"(https?://raw[^"]+)"%s*[,%)]')
             or code:match('game:HttpGet%(%s*"(https?://pastebin[^"]+)"%s*[,%)]')
-        return detectedBpm, detectedUrl
+        local hasNotes = code:find("keypress%s*%(") ~= nil
+        return detectedBpm, detectedUrl, hasNotes
     end
 
     local function executeScript(code, fallbackBpm)
         local detectedBpm, detectedUrl = parseScript(code)
         if detectedUrl then
-            playSong(detectedBpm or fallbackBpm or 100, detectedUrl)
+            playSong(detectedBpm or fallbackBpm or 100, detectedUrl, false)
             return true
         end
         return false
@@ -354,7 +386,7 @@
     updateLoading("Loading GUI Library...", 0.8)
     local WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/RandomGuy-VN/NimiUI/refs/heads/main/source.lua", true))()
 
-    local SCRIPT_VERSION = "V1.5 Mega Update"
+    local SCRIPT_VERSION = "V1.25 Stable"
 
     local Window = WindUI:CreateWindow({
         Title = " VITL PIANO | " .. SCRIPT_VERSION,
@@ -379,11 +411,16 @@
         local sBpm = tostring(song.BPM or 100)
         local sPlaylist = song.Playlist or T.SongTab.UnknownGenre
         local sArtist = song.Artist or T.SongTab.UnknownArtist
+        local titlePrefix = song.LocalFile and "💾 " or ""
         SongSection:Button({
-            Title = song.Name or "???",
+            Title = titlePrefix .. (song.Name or "???"),
             Desc = T.SongTab.BPM .. " " .. sBpm .. " | " .. T.SongTab.Genre .. " " .. sPlaylist .. " | " .. T.SongTab.Artist .. " " .. sArtist,
             Callback = function()
-                pcall(playSong, song.BPM or 100, song.URL)
+                if song.LocalFile then
+                    pcall(playSong, song.BPM or 100, song.LocalFile, true)
+                else
+                    pcall(playSong, song.BPM or 100, song.URL, false)
+                end
             end
         })
     end
@@ -457,32 +494,50 @@
                 return
             end
 
-            local detectedBpm, detectedUrl = parseScript(NewSongScript)
-            if not detectedUrl then
-                WindUI:Notify({ Title = T.AddSong.Error, Content = T.AddSong.ErrorMsg, Duration = 5, Icon = "alert-circle" })
-                return
-            end
-
+            local detectedBpm, detectedUrl, hasNotes = parseScript(NewSongScript)
             local bpmNumber = detectedBpm or 100
-
-            table.insert(customSongs, {
+            local songEntry = {
                 Name = NewSongName,
                 BPM = bpmNumber,
                 Artist = NewSongArtist ~= "" and NewSongArtist or T.SongTab.UnknownArtist,
                 Playlist = NewSongPlaylist ~= "" and NewSongPlaylist or T.SongTab.UnknownGenre,
-                URL = detectedUrl
-            })
+            }
+
+            if detectedUrl then
+                songEntry.URL = detectedUrl
+            elseif hasNotes and writefile then
+                local savedPath = saveLocalSongFile(NewSongName, NewSongScript)
+                if not savedPath then
+                    WindUI:Notify({ Title = T.AddSong.Error, Content = T.AddSong.ErrorMsg, Duration = 5, Icon = "alert-circle" })
+                    return
+                end
+                songEntry.LocalFile = savedPath
+            else
+                WindUI:Notify({ Title = T.AddSong.Error, Content = T.AddSong.ErrorMsg, Duration = 5, Icon = "alert-circle" })
+                return
+            end
+
+            table.insert(customSongs, songEntry)
             saveCustomSongs()
 
+            local btnTitle = (songEntry.LocalFile and "💾 " or "") .. NewSongName
             SongSection:Button({
-                Title = NewSongName,
+                Title = btnTitle,
                 Desc = T.SongTab.BPM .. " " .. tostring(bpmNumber) .. " | " .. T.SongTab.Genre .. " " .. (NewSongPlaylist ~= "" and NewSongPlaylist or T.SongTab.UnknownGenre) .. " | " .. T.SongTab.Artist .. " " .. (NewSongArtist ~= "" and NewSongArtist or T.SongTab.UnknownArtist),
                 Callback = function()
-                    pcall(playSong, bpmNumber, detectedUrl)
+                    if songEntry.LocalFile then
+                        pcall(playSong, bpmNumber, songEntry.LocalFile, true)
+                    else
+                        pcall(playSong, bpmNumber, songEntry.URL, false)
+                    end
                 end
             })
 
-            pcall(playSong, bpmNumber, detectedUrl)
+            if songEntry.LocalFile then
+                pcall(playSong, bpmNumber, songEntry.LocalFile, true)
+            else
+                pcall(playSong, bpmNumber, songEntry.URL, false)
+            end
             WindUI:Notify({ Title = T.AddSong.Success, Content = T.AddSong.Added .. NewSongName, Duration = 5, Icon = "check" })
         end
     })
